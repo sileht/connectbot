@@ -26,12 +26,17 @@ import android.content.SharedPreferences;
 import android.content.SharedPreferences.OnSharedPreferenceChangeListener;
 import android.content.res.Configuration;
 import android.preference.PreferenceManager;
+import android.os.Build;
 import android.text.ClipboardManager;
+import android.text.Editable;
+import android.text.method.CharacterPickerDialog;
 import android.util.Log;
+import android.util.SparseArray;
 import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.View.OnKeyListener;
+import android.widget.Button;
 import de.mud.terminal.VDUBuffer;
 import de.mud.terminal.vt320;
 
@@ -81,6 +86,12 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 
 	private final SharedPreferences prefs;
 
+    private static SparseArray<String> PICKER_SETS = new SparseArray<String>();
+	static {
+		PICKER_SETS.put(KeyCharacterMap.PICKER_DIALOG_INPUT,
+				"!@#$%&*?/:_\"'()-+;,.€¥£~=\\^[]¡¿{}<>|Þ§©®±÷ÖöÄäÅåØøÆæ");
+	};
+
 	public TerminalKeyListener(TerminalManager manager,
 			TerminalBridge bridge,
 			VDUBuffer buffer,
@@ -99,6 +110,10 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 				== Configuration.KEYBOARD_QWERTY);
 
 		updateKeymode();
+	}
+
+	private boolean isHTCVision(){
+		return android.os.Build.DEVICE.equals("vision");
 	}
 
 	/**
@@ -194,54 +209,107 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 
 			final boolean printing = (key != 0);
 
-			// otherwise pass through to existing session
-			// print normal keys
-			if (printing) {
-				metaState &= ~(META_SLASH | META_TAB);
+            //Show up the CharacterPickerDialog when the SYM key is pressed
+            boolean HTCVisionSym = (isHTCVision() && keyCode == 84 && (metaState == 4 || metaState == 8));
+            if ((keyCode == KeyEvent.KEYCODE_SYM || HTCVisionSym) && v != null) {
+                showCharPickerDialog(v);
+                return true;
+            }
 
-				// Remove shift and alt modifiers
-				final int lastMetaState = metaState;
-				metaState &= ~(META_SHIFT_ON | META_ALT_ON);
-				if (metaState != lastMetaState) {
-					bridge.redraw();
+
+ 			// otherwise pass through to existing session
+ 			// print normal keys
+ 			if (printing) {
+ 				metaState &= ~(META_SLASH | META_TAB);
+ 
+ 				// Remove shift and alt modifiers
+ 				final int lastMetaState = metaState;
+ 				metaState &= ~(META_SHIFT_ON | META_ALT_ON);
+ 				if (metaState != lastMetaState) {
+ 					bridge.redraw();
+ 				}
+ 
+ 				if ((metaState & META_CTRL_MASK) != 0) {
+ 					metaState &= ~META_CTRL_ON;
+ 					bridge.redraw();
+ 
+ 					// If there is no hard keyboard or there is a hard keyboard currently hidden,
+ 					// CTRL-1 through CTRL-9 will send F1 through F9
+ 					if ((!hardKeyboard || (hardKeyboard && hardKeyboardHidden))
+ 							&& sendFunctionKey(keyCode))
+ 						return true;
+
+ 					// Support CTRL-a through CTRL-z
+ 					if (key >= 0x61 && key <= 0x7A)
+ 						key -= 0x60;
+ 					// Support CTRL-A through CTRL-_
+ 					else if (key >= 0x41 && key <= 0x5F)
+ 						key -= 0x40;
+ 					// CTRL-space sends NULL
+ 					else if (key == 0x20)
+ 						key = 0x00;
+ 					// CTRL-? sends DEL
+ 					else if (key == 0x3F)
+ 						key = 0x7F;
+ 				}
+ 
+ 				// handle pressing f-keys
+ 				if ((hardKeyboard && !hardKeyboardHidden)
+ 						&& (curMetaState & KeyEvent.META_SHIFT_ON) != 0
+ 						&& sendFunctionKey(keyCode))
+ 					return true;
+ 
+ 				if (key < 0x80)
+ 					bridge.transport.write(key);
+ 				else {
+                    // HTC Vision fixes
+                    if(isHTCVision()) {
+                        /*
+                         * curMetaState == 0 normal mode
+                         * curMetaState == 1 if shift key is pressed or locked
+                         * curMetaState == 2 if FN key is pressed or locked
+                         * curMetaState == 3 if FN OR shift key is pressed or locked
+                         */
+                        if(curMetaState == 0) {
+                            // HTC Vision, lowercase if curMetaState == 0! Problem with HW keymapping?
+                            if(key == 0xc4) //Ä
+                                key = 0xe4; //ä
+                            else if(key == 0xd6) //Ö
+                                key = 0xf6; //ö
+                            else if(key == 0xc5) //Å
+                                key = 0xe5; //å
+                            else if(key == 0xd8) { //Ø
+                                if(isHTCVision()){ // Bind's Ø to CTRL
+                                    metaPress(META_CTRL_ON);
+                                    bridge.redraw();
+                                    return true;
+                                }else{
+                                    key = 0xf8; //ø
+                                }
+                            } else if(key == 0xc6) { //Æ
+                                if(isHTCVision()){ // Bind's Æ to ALT
+                                    sendEscape();
+                                    bridge.redraw();
+                                    return true;
+                                }else{
+                                    key = 0xe6; //æ
+                                }
+                            }
+                        }
+                        else if(curMetaState == 2) {
+                            // HTC Vision, <>| if FN pressed or locked
+                            if(key == 0xc4) //Ä
+                                key = 0x3c; //<
+                            else if(key == 0xd6) //Ö
+                                key = 0x3e; //>
+                            else if(key == 0xc5) //Å
+                                key = 0x7c; //|
+                        }
+                    }
+
+                    // TODO write encoding routine that doesn't allocate each time
+                    bridge.transport.write(new String(Character.toChars(key)).getBytes(encoding));
 				}
-
-				if ((metaState & META_CTRL_MASK) != 0) {
-					metaState &= ~META_CTRL_ON;
-					bridge.redraw();
-
-					// If there is no hard keyboard or there is a hard keyboard currently hidden,
-					// CTRL-1 through CTRL-9 will send F1 through F9
-					if ((!hardKeyboard || (hardKeyboard && hardKeyboardHidden))
-							&& sendFunctionKey(keyCode))
-						return true;
-
-					// Support CTRL-a through CTRL-z
-					if (key >= 0x61 && key <= 0x7A)
-						key -= 0x60;
-					// Support CTRL-A through CTRL-_
-					else if (key >= 0x41 && key <= 0x5F)
-						key -= 0x40;
-					// CTRL-space sends NULL
-					else if (key == 0x20)
-						key = 0x00;
-					// CTRL-? sends DEL
-					else if (key == 0x3F)
-						key = 0x7F;
-				}
-
-				// handle pressing f-keys
-				if ((hardKeyboard && !hardKeyboardHidden)
-						&& (curMetaState & KeyEvent.META_SHIFT_ON) != 0
-						&& sendFunctionKey(keyCode))
-					return true;
-
-				if (key < 0x80)
-					bridge.transport.write(key);
-				else
-					// TODO write encoding routine that doesn't allocate each time
-					bridge.transport.write(new String(Character.toChars(key))
-							.getBytes(encoding));
 
 				return true;
 			}
@@ -316,9 +384,17 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 				break;
 
 			case KeyEvent.KEYCODE_DEL:
-				((vt320) buffer).keyPressed(vt320.KEY_BACK_SPACE, ' ',
-						getStateForBuffer());
-				metaState &= ~META_TRANSIENT;
+                if(isHTCVision()) {
+                    if(metaState == 4 || metaState == 8) {
+                        ((vt320) buffer).keyPressed(vt320.KEY_DELETE, ' ', getStateForBuffer());
+                    }else{
+                        ((vt320) buffer).keyPressed(vt320.KEY_BACK_SPACE, ' ', 0);
+                    } 
+				} else {
+					((vt320) buffer).keyPressed(vt320.KEY_BACK_SPACE, ' ',
+							getStateForBuffer());
+					metaState &= ~META_TRANSIENT;
+				}
 				return true;
 			case KeyEvent.KEYCODE_ENTER:
 				((vt320)buffer).keyTyped(vt320.KEY_ENTER, ' ', 0);
@@ -529,4 +605,29 @@ public class TerminalKeyListener implements OnKeyListener, OnSharedPreferenceCha
 	public void setCharset(String encoding) {
 		this.encoding = encoding;
 	}
+    public boolean showCharPickerDialog(View v) {
+        CharSequence str = "";
+        Editable content = Editable.Factory.getInstance().newEditable(str);
+
+        String set = PICKER_SETS.get(KeyCharacterMap.PICKER_DIALOG_INPUT);
+        if (set == null) return false;
+
+        CharacterPickerDialog cpd = new CharacterPickerDialog(v.getContext(), v, content, set, true) {
+        @Override
+        public void onClick(View v) {
+            if (v instanceof Button) {
+                CharSequence result = ((Button) v).getText();
+                try {
+                    bridge.transport.write(result.toString().getBytes());
+                } catch (IOException e) {
+                    Log.e(TAG, "Problem with the CharacterPickerDialog", e);
+                }
+            }
+            dismiss(); //Closes the picker
+        }
+        };
+        cpd.show();
+        return true;
+    }
+
 }

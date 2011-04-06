@@ -351,12 +351,27 @@ public class ConsoleActivity extends Activity {
 			public void onClick(View view) {
 				View flip = findCurrentView(R.id.console_flip);
 				if (flip == null)
-					return;
+			return;
 
-				inputManager.showSoftInput(flip, InputMethodManager.SHOW_FORCED);
-				keyboardGroup.setVisibility(View.GONE);
+		inputManager.showSoftInput(flip, InputMethodManager.SHOW_FORCED);
+		keyboardGroup.setVisibility(View.GONE);
 			}
 		});
+
+        final ImageView symButton = (ImageView) findViewById(R.id.button_sym);
+        symButton.setOnClickListener(new OnClickListener() {
+            public void onClick(View view) {
+                View flip = findCurrentView(R.id.console_flip);
+                if (flip == null) return;
+
+                TerminalView terminal = (TerminalView)flip;
+
+                TerminalKeyListener handler = terminal.bridge.getKeyHandler();
+                handler.showCharPickerDialog(terminal);
+
+                keyboardGroup.setVisibility(View.GONE);
+            }
+        });
 
 		final ImageView ctrlButton = (ImageView) findViewById(R.id.button_ctrl);
 		ctrlButton.setOnClickListener(new OnClickListener() {
